@@ -338,6 +338,18 @@ jobs:
             echo "正在配置 FinaSU（LyraVoid/FinaSU）：内核检出到官方最新 Release 标签提交，KSU 版本(30000+提交数)与官方管理器 versionCode 严格一致..."
             git clone https://github.com/LyraVoid/FinaSU.git KernelSU
             # FinaSU 自带的 kernel/setup.sh 会克隆上游 tiann/KernelSU，不可用；此处手动完成 in-tree 集成
+            DRIVER_DIR=./common/drivers
+            ln -sfn "$(pwd)/KernelSU/kernel" "$DRIVER_DIR/kernelsu"
+            # 实体化树内 uapi 符号链接（其指向仓库根 uapi/），规避跨目录符号链接解析差异
+            rm -f KernelSU/kernel/include/uapi
+            cp -r KernelSU/uapi KernelSU/kernel/include/uapi
+            # 记录驱动目录绝对路径，供构建步骤以 KCFLAGS 注入头文件搜索目录
+            echo "KSU_INC_DIR=$(pwd)/KernelSU/kernel" >> "$GITHUB_ENV"
+            grep -q "obj-.*CONFIG_KSU.*kernelsu/" "$DRIVER_DIR/Makefile" || \
+              echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$DRIVER_DIR/Makefile"
+            grep -q 'drivers/kernelsu/Kconfig' "$DRIVER_DIR/Kconfig" || \
+              sed -i "/endmenu/i source \"drivers/kernelsu/Kconfig\"" "$DRIVER_DIR/Kconfig"
+            [ -e "$DRIVER_DIR/kernelsu/Kbuild" ] || { echo "::error::FinaSU 内核驱动集成失败：$DRIVER_DIR/kernelsu/Kbuild 不存在"; exit 1; }
             CERT_TOOL=extract_manager_cert.py
             mkdir -p manager-artifacts
             wget -q "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/scripts/finasu_compat/$CERT_TOOL" -O "$CERT_TOOL" || CERT_TOOL=""
@@ -759,6 +771,12 @@ jobs:
           export CC="clang"
           export LIBCLANG_PATH="$WORKDIR/kernel_workspace/clang19/lib"
           # 3. 配置KCFLAGS
+          # FinaSU：以绝对路径注入驱动与 SELinux 头文件搜索目录（KCFLAGS 机制保证进入每条编译命令）
+          if [ -n "${KSU_INC_DIR:-}" ]; then
+            KCFLAGS+=" -I$KSU_INC_DIR -I$KSU_INC_DIR/include"
+            KCFLAGS+=" -I$ROOT_REAL_PATH/security/selinux -I$ROOT_REAL_PATH/security/selinux/include"
+            KCFLAGS+=" -I$COMMON_REAL_PATH/out/security/selinux -I$COMMON_REAL_PATH/out/security/selinux/include"
+          fi
           KCFLAGS+=" -no-canonical-prefixes"
           KCFLAGS+=" -O2"
           KCFLAGS+=" -pipe"
@@ -784,6 +802,10 @@ jobs:
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" OBJCOPY="llvm-objcopy" O=out gki_defconfig &&
+          if [[ "${{ github.event.inputs.ksu_type }}" != "none" ]] && ! grep -q "^CONFIG_KSU=y" out/.config; then
+            echo "::error::CONFIG_KSU 未生效：KernelSU 驱动未正确集成到内核树（检查 KSU 集成步骤）"
+            exit 1
+          fi &&
           export CC="$(pwd)/cc-wrapper" && export LD="$(pwd)/ld-wrapper" &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" OBJCOPY="llvm-objcopy" O=out Image
           

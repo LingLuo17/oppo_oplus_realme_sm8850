@@ -206,7 +206,13 @@ elif [[ "$KSU_BRANCH" == [fF] ]]; then
   sed -i 's/@[$](KSU_VERSION_BRANCH)/@cctv18/' KernelSU/kernel/Kbuild
   grep -q '@cctv18' KernelSU/kernel/Kbuild || echo ">>> 警告：FinaSU 品牌名替换未命中（上游 Kbuild 结构可能已变化）"
   DRIVER_DIR=./common/drivers
-  ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$(pwd)/KernelSU/kernel")" "$DRIVER_DIR/kernelsu"
+  ln -sfn "$(pwd)/KernelSU/kernel" "$DRIVER_DIR/kernelsu"
+  # 实体化树内 uapi 符号链接（其指向仓库根 uapi/），规避跨目录符号链接解析差异
+  rm -f KernelSU/kernel/include/uapi
+  cp -r KernelSU/uapi KernelSU/kernel/include/uapi
+  # 供编译阶段以 KCFLAGS 注入头文件搜索目录
+  KSU_INC_DIR="$(pwd)/KernelSU/kernel"
+  export KSU_INC_DIR
   grep -q "obj-.*CONFIG_KSU.*kernelsu/" "$DRIVER_DIR/Makefile" || \
     echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$DRIVER_DIR/Makefile"
   grep -q 'drivers/kernelsu/Kconfig' "$DRIVER_DIR/Kconfig" || \
@@ -500,6 +506,12 @@ ROOT_REAL_PATH=$(dirname "$COMMON_REAL_PATH")
 KCFLAGS+=" -fdebug-prefix-map=$ROOT_REAL_PATH=."
 KCFLAGS+=" -fmacro-prefix-map=$ROOT_REAL_PATH=."
 KCFLAGS+=" -ffile-prefix-map=$ROOT_REAL_PATH=."
+# FinaSU：以绝对路径注入驱动与 SELinux 头文件搜索目录
+if [ -n "${KSU_INC_DIR:-}" ]; then
+  KCFLAGS+=" -I$KSU_INC_DIR -I$KSU_INC_DIR/include"
+  KCFLAGS+=" -I$ROOT_REAL_PATH/security/selinux -I$ROOT_REAL_PATH/security/selinux/include"
+  KCFLAGS+=" -I$COMMON_REAL_PATH/out/security/selinux -I$COMMON_REAL_PATH/out/security/selinux/include"
+fi
 export KCFLAGS
 source "./_setup_env.sh" 2>/dev/null || true
 echo "KCFLAGS=$KCFLAGS"
