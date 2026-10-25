@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       ksu_type:
-        description: 'KernelSU分支(BakaSU/SukiSU Ultra/KernelSU Next/KSU(原版)/无内置KSU,默认BakaSU)'
+        description: 'KernelSU分支(BakaSU/SukiSU Ultra/FinaSU/KernelSU Next/KSU(原版)/无内置KSU,默认BakaSU)'
         required: true
         type: choice
         default: 'bakasu'
@@ -21,6 +21,7 @@ on:
           - 'sukisu'
           - 'ksunext'
           - 'ksu'
+          - 'finasu'
           - 'none'
       susfs_enable:
         description: '是否开启susfs(用于增强隐藏环境挂载功能; 可能轻微增加耗电，上游更新导致不稳定时或不需要可关闭)'
@@ -107,6 +108,8 @@ jobs:
             KSU_TYPENAME="KSUNext"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksu" ]]; then
             KSU_TYPENAME="KSU"
+          elif [[ ${{ github.event.inputs.ksu_type }} == "finasu" ]]; then
+            KSU_TYPENAME="FinaSU"
           else
             KSU_TYPENAME="none"
           fi
@@ -167,6 +170,8 @@ jobs:
             KSU_TYPENAME="KernelSU Next"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksu" ]]; then
             KSU_TYPENAME="KernelSU (Official)"
+          elif [[ ${{ github.event.inputs.ksu_type }} == "finasu" ]]; then
+            KSU_TYPENAME="FinaSU"
           else
             KSU_TYPENAME="无内置KSU"
           fi
@@ -195,6 +200,7 @@ jobs:
           - BakaSU管理器下载：[BakaSU_CI](https://github.com/cctv18/BakaSU_CI/releases)
           - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
           - KernelSU Next管理器下载：[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next/releases)
+          - FinaSU管理器下载：[FinaSU](https://github.com/LyraVoid/FinaSU/releases)
           - KSU原版管理器下载：[KernelSU](https://github.com/tiann/KernelSU/releases)
           
           ### ⏫️ 更新内容：

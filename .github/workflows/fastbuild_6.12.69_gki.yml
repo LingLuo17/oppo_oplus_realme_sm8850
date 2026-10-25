@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       ksu_type:
-        description: 'KernelSU分支(BakaSU/SukiSU Ultra/KernelSU Next/KSU(原版)/无内置KSU,默认BakaSU)'
+        description: 'KernelSU分支(BakaSU/SukiSU Ultra/FinaSU/KernelSU Next/KSU(原版)/无内置KSU,默认BakaSU)'
         required: true
         type: choice
         default: 'bakasu'
@@ -21,6 +21,7 @@ on:
           - 'sukisu'
           - 'ksunext'
           - 'ksu'
+          - 'finasu'
           - 'none'
       susfs_enable:
         description: '是否开启susfs(用于增强隐藏环境挂载功能; 可能轻微增加耗电，上游更新导致不稳定时或不需要可关闭)'
@@ -333,6 +334,60 @@ jobs:
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
             sed -i "s/DKSU_VERSION=16/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
+          elif [[ ${{ github.event.inputs.ksu_type }} == "finasu" ]]; then
+            echo "正在配置 FinaSU（LyraVoid/FinaSU）：内核检出到官方最新 Release 标签提交，KSU 版本(30000+提交数)与官方管理器 versionCode 严格一致..."
+            git clone https://github.com/LyraVoid/FinaSU.git KernelSU
+            # FinaSU 自带的 kernel/setup.sh 会克隆上游 tiann/KernelSU，不可用；此处手动完成 in-tree 集成
+            CERT_TOOL=extract_manager_cert.py
+            mkdir -p manager-artifacts
+            wget -q "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/scripts/finasu_compat/$CERT_TOOL" -O "$CERT_TOOL" || CERT_TOOL=""
+            REL_JSON=$(curl -s --fail --max-time 30 -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/LyraVoid/FinaSU/releases/latest" || true)
+            REL_TAG=$(printf '%s' "$REL_JSON" | jq -r '.tag_name' 2>/dev/null || true)
+            REL_APK_URL=$(printf '%s' "$REL_JSON" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' 2>/dev/null | head -n1 || true)
+            if [ -n "$REL_TAG" ] && [ "$REL_TAG" != "null" ] && [ -n "$REL_APK_URL" ] && [ "$REL_APK_URL" != "null" ]; then
+              git -C KernelSU fetch origin --tags 2>/dev/null || true
+              if git -C KernelSU checkout --detach "$REL_TAG" 2>/dev/null; then
+                echo "FinaSU 已检出到官方 Release $REL_TAG 对应提交"
+                REL_APK="manager-artifacts/FinaSU-manager.apk"
+                if curl -sL --fail --retry 3 --max-time 300 -o "$REL_APK" "$REL_APK_URL" && [ -n "$CERT_TOOL" ]; then
+                  CERT_INFO=$(python3 "$CERT_TOOL" "$REL_APK" | head -n1 || true)
+                  CERT_SIZE=$(printf '%s' "$CERT_INFO" | awk '{print $1}')
+                  CERT_HASH=$(printf '%s' "$CERT_INFO" | awk '{print $2}')
+                fi
+              else
+                echo "::warning::FinaSU 检出 Release $REL_TAG 失败，内核跟随 master HEAD（版本号可能与官方管理器不一致）"
+              fi
+            else
+              echo "::warning::未获取到 FinaSU 官方最新 Release 信息，内核跟随 master HEAD（版本号可能与官方管理器不一致）"
+            fi
+            KSU_VERSION=$(expr $(git -C KernelSU rev-list --count HEAD) + 30000 2>/dev/null || echo 114514)
+            # 将官方管理器签名证书注入内核第二信任槽（EXPECTED_SIZE2/HASH2），否则 FinaSU 管理器显示"未安装"
+            if [ -n "$CERT_SIZE" ] && [ -n "$CERT_HASH" ]; then
+              echo "注入 FinaSU 管理器签名证书: size=$CERT_SIZE sha256=$CERT_HASH"
+              awk -v size="$CERT_SIZE" -v hash="$CERT_HASH" '
+                !done && /^ccflags-y \+= -DEXPECTED_HASH=/ {
+                  print
+                  print "KSU_EXPECTED_SIZE2 := " size
+                  print "KSU_EXPECTED_HASH2 := " hash
+                  print "KSU_SECOND_SIGNATURE_RELEASE := 1"
+                  done = 1
+                  next
+                }
+                { print }
+              ' KernelSU/kernel/Kbuild > KernelSU/kernel/Kbuild.new && mv KernelSU/kernel/Kbuild.new KernelSU/kernel/Kbuild
+              grep -q "^KSU_EXPECTED_SIZE2 := " KernelSU/kernel/Kbuild \
+                && grep -q "^KSU_EXPECTED_HASH2 := " KernelSU/kernel/Kbuild \
+                && grep -q "^KSU_SECOND_SIGNATURE_RELEASE := 1" KernelSU/kernel/Kbuild \
+                || { echo "::error::FinaSU Kbuild 证书注入失败（锚点行缺失，上游结构可能已变化）"; exit 1; }
+            else
+              echo "::warning::未取得 FinaSU 管理器签名证书，内核仅信任上游默认签名槽，FinaSU 管理器可能显示未安装"
+            fi
+            # CI 检出的是 detached 提交，Kbuild 的 rev-parse --abbrev-ref 会显示 @HEAD，固定为品牌名
+            sed -i 's/@[$](KSU_VERSION_BRANCH)/@cctv18/' KernelSU/kernel/Kbuild
+            grep -q '@cctv18' KernelSU/kernel/Kbuild || echo "::warning::FinaSU 品牌名替换未命中（上游 Kbuild 结构可能已变化）"
+            echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+            echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
           else
             echo "已选择无内置KernelSU模式，跳过KernelSU配置..."
           fi
@@ -384,6 +439,19 @@ jobs:
         if: inputs.susfs_enable
         run: |
           cd kernel_workspace
+          if [[ "${{ github.event.inputs.ksu_type }}" == "finasu" ]]; then
+            echo "FinaSU：写入 FinaSU Kconfig 定义的 SUSFS 配置项（try-umount/自动隐藏等由其树内扩展原生处理，无对应独立开关）..."
+            echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          else
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -399,6 +467,7 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
           
       - name: 添加 KSU & 其他配置项
         run: |
@@ -774,6 +843,8 @@ jobs:
             KSU_TYPENAME="KSUNext"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksu" ]]; then
             KSU_TYPENAME="KSU"
+          elif [[ ${{ github.event.inputs.ksu_type }} == "finasu" ]]; then
+            KSU_TYPENAME="FinaSU"
           else
             KSU_TYPENAME="none"
           fi
@@ -877,6 +948,8 @@ jobs:
             KSU_TYPENAME="KernelSU Next"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksu" ]]; then
             KSU_TYPENAME="KSU"
+          elif [[ ${{ github.event.inputs.ksu_type }} == "finasu" ]]; then
+            KSU_TYPENAME="FinaSU"
           else
             KSU_TYPENAME="无内置KSU"
           fi
@@ -906,6 +979,7 @@ jobs:
           - BakaSU管理器下载：[BakaSU_CI](https://github.com/cctv18/BakaSU_CI/releases)
           - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
           - KernelSU Next管理器下载：[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next/releases)
+          - FinaSU管理器下载：[FinaSU](https://github.com/LyraVoid/FinaSU/releases)
           - KSU原版管理器下载：[KernelSU](https://github.com/tiann/KernelSU/releases)
           
           ### ⏫️ 更新内容：

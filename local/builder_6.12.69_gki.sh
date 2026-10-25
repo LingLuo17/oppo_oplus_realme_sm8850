@@ -15,7 +15,7 @@ read -p "是否启用susfs？(y/n，默认：y): " APPLY_SUSFS
 APPLY_SUSFS=${APPLY_SUSFS:-y}
 read -p "是否启用 KPM？(y-启用 KpatchNext独立kpm实现, n-关闭kpm，默认：n): " USE_PATCH_LINUX
 USE_PATCH_LINUX=${USE_PATCH_LINUX:-n}
-read -p "KSU分支版本(r=BakaSU, y=SukiSU Ultra, n=KernelSU Next, k=KSU, l=lkm模式(无内置KSU), 默认：r): " KSU_BRANCH
+read -p "KSU分支版本(r=BakaSU, y=SukiSU Ultra, f=FinaSU, n=KernelSU Next, k=KSU, l=lkm模式(无内置KSU), 默认：r): " KSU_BRANCH
 KSU_BRANCH=${KSU_BRANCH:-r}
 read -p "是否应用 lz4 1.10.0 & zstd 1.5.7 补丁？(y/n，默认：y): " APPLY_LZ4
 APPLY_LZ4=${APPLY_LZ4:-y}
@@ -38,6 +38,8 @@ if [[ "$KSU_BRANCH" == "y" || "$KSU_BRANCH" == "Y" ]]; then
   KSU_TYPE="SukiSU Ultra"
 elif [[ "$KSU_BRANCH" == "r" || "$KSU_BRANCH" == "R" ]]; then
   KSU_TYPE="BakaSU"
+elif [[ "$KSU_BRANCH" == "f" || "$KSU_BRANCH" == "F" ]]; then
+  KSU_TYPE="FinaSU"
 elif [[ "$KSU_BRANCH" == "n" || "$KSU_BRANCH" == "N" ]]; then
   KSU_TYPE="KernelSU Next"
 elif [[ "$KSU_BRANCH" == "k" || "$KSU_BRANCH" == "K" ]]; then
@@ -155,6 +157,60 @@ elif [[ "$KSU_BRANCH" == "k" || "$KSU_BRANCH" == "K" ]]; then
   cd ./KernelSU
   KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/tiann/KernelSU/commits?sha=main&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 30000)
   sed -i "s/DKSU_VERSION=16/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
+elif [[ "$KSU_BRANCH" == [fF] ]]; then
+  echo ">>> 拉取 FinaSU 并检出到官方最新 Release 标签提交（KSU 版本 = 30000 + 提交数，与官方管理器 versionCode 一致）..."
+  git clone https://github.com/LyraVoid/FinaSU.git KernelSU
+  # FinaSU 自带的 kernel/setup.sh 会克隆上游 tiann/KernelSU，不可用；此处手动完成 in-tree 集成
+  REL_JSON=$(curl -s --fail --max-time 30 "https://api.github.com/repos/LyraVoid/FinaSU/releases/latest" || true)
+  REL_TAG=$(printf '%s' "$REL_JSON" | grep -oP '"tag_name":\s*"\K[^"]+' | head -n1 || true)
+  REL_APK_URL=$(printf '%s' "$REL_JSON" | grep -oP '"browser_download_url":\s*"\K[^"]+\.apk' | head -n1 || true)
+  CERT_TOOL="$SCRIPT_DIR/../scripts/finasu_compat/extract_manager_cert.py"
+  if [ ! -f "$CERT_TOOL" ]; then
+    wget -q "https://github.com/LingLuo17/oppo_oplus_realme_sm8850/raw/refs/heads/main/scripts/finasu_compat/extract_manager_cert.py" -O "$CERT_TOOL" || CERT_TOOL=""
+  fi
+  if [ -n "$REL_TAG" ] && [ -n "$REL_APK_URL" ]; then
+    git -C KernelSU fetch origin --tags 2>/dev/null || true
+    if git -C KernelSU checkout --detach "$REL_TAG" 2>/dev/null; then
+      echo ">>> FinaSU 已检出到官方 Release $REL_TAG 对应提交"
+      REL_APK="FinaSU-manager.apk"
+      if curl -sL --fail --retry 3 --max-time 300 -o "$REL_APK" "$REL_APK_URL" && [ -n "$CERT_TOOL" ] && [ -f "$CERT_TOOL" ]; then
+        CERT_INFO=$(python3 "$CERT_TOOL" "$REL_APK" | head -n1 || true)
+        CERT_SIZE=$(printf '%s' "$CERT_INFO" | awk '{print $1}')
+        CERT_HASH=$(printf '%s' "$CERT_INFO" | awk '{print $2}')
+      fi
+    else
+      echo ">>> 警告：FinaSU 检出 Release $REL_TAG 失败，内核跟随 master HEAD"
+    fi
+  else
+    echo ">>> 警告：未获取到 FinaSU 官方最新 Release 信息，内核跟随 master HEAD"
+  fi
+  KSU_VERSION=$(expr $(git -C KernelSU rev-list --count HEAD) + 30000 2>/dev/null || echo 114514)
+  echo ">>> FinaSU KSU 版本：$KSU_VERSION"
+  if [ -n "$CERT_SIZE" ] && [ -n "$CERT_HASH" ]; then
+    echo ">>> 注入 FinaSU 管理器签名证书到内核第二信任槽: size=$CERT_SIZE sha256=$CERT_HASH"
+    awk -v size="$CERT_SIZE" -v hash="$CERT_HASH" '
+      !done && /^ccflags-y \+= -DEXPECTED_HASH=/ {
+        print
+        print "KSU_EXPECTED_SIZE2 := " size
+        print "KSU_EXPECTED_HASH2 := " hash
+        print "KSU_SECOND_SIGNATURE_RELEASE := 1"
+        done = 1
+        next
+      }
+      { print }
+    ' KernelSU/kernel/Kbuild > KernelSU/kernel/Kbuild.new && mv KernelSU/kernel/Kbuild.new KernelSU/kernel/Kbuild
+  else
+    echo ">>> 警告：未取得 FinaSU 管理器签名证书，FinaSU 管理器可能显示未安装"
+  fi
+  # 本地检出同样是 detached 提交，Kbuild 的 rev-parse --abbrev-ref 会显示 @HEAD，固定为品牌名
+  sed -i 's/@[$](KSU_VERSION_BRANCH)/@cctv18/' KernelSU/kernel/Kbuild
+  grep -q '@cctv18' KernelSU/kernel/Kbuild || echo ">>> 警告：FinaSU 品牌名替换未命中（上游 Kbuild 结构可能已变化）"
+  DRIVER_DIR=./common/drivers
+  ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$(pwd)/KernelSU/kernel")" "$DRIVER_DIR/kernelsu"
+  grep -q "obj-.*CONFIG_KSU.*kernelsu/" "$DRIVER_DIR/Makefile" || \
+    echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$DRIVER_DIR/Makefile"
+  grep -q 'drivers/kernelsu/Kconfig' "$DRIVER_DIR/Kconfig" || \
+    sed -i "/endmenu/i source \"drivers/kernelsu/Kconfig\"" "$DRIVER_DIR/Kconfig"
 else
   echo "已选择无内置KernelSU模式，跳过配置..."
 fi
@@ -215,6 +271,19 @@ DEFCONFIG_FILE=./common/arch/arm64/configs/gki_defconfig
 # 写入通用 SUSFS/KSU 配置
 echo "CONFIG_KSU=y" >> "$DEFCONFIG_FILE"
 if [[ "$APPLY_SUSFS" == [yY] ]]; then
+  if [[ "$KSU_BRANCH" == [fF] ]]; then
+    echo ">>> FinaSU：写入 FinaSU Kconfig 定义的 SUSFS 配置项（try-umount/自动隐藏等由其树内扩展原生处理，无对应独立开关）..."
+    echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG_FILE"
+    echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG_FILE"
+  else
   echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG_FILE"
   echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$DEFCONFIG_FILE"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG_FILE"
@@ -230,6 +299,7 @@ if [[ "$APPLY_SUSFS" == [yY] ]]; then
   echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG_FILE"
   echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG_FILE"
   echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG_FILE"
+  fi
 else
   echo "CONFIG_KSU_SUSFS=n" >> "$DEFCONFIG_FILE"
 fi

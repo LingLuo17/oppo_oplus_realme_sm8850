@@ -20,7 +20,7 @@
 ## 已实现：
 - [x] 欧加真骁龙 SM8850 通用OKI内核（基于一加15源码的 6.12.23 / 一加Ace 6T源码的 6.12.38 ，其他同内核版本非SM8850机型可自行测试，部分机型可完全兼容）
 - [x] 欧加真天玑 MT6993 通用OKI内核（基于OPPO Find X9 源码的 6.12.23 ，其他同内核版本非MT6993机型可自行测试，部分机型可完全兼容）
-- [x] ReSukiSU/SukiSU Ultra/KernelSU Next/原版KernelSU多版本KSU可选
+- [x] ReSukiSU/SukiSU Ultra/FinaSU/KernelSU Next/原版KernelSU多版本KSU可选
 - [x] 引入独家设计的 [ccache-ECS](https://github.com/cctv18/ccache-ECS) 缓存及大量编译流程优化，编译时间可稳定在约6min *(首次编译时会拉取公共预置ccache，从第二次开始没有大量配置改动的情况下，单次编译时间约6min；距离上一次调用两周未调用后缓存会被自动清除，此时编译会自动重建缓存)*
 - [x] 引入O2编译优化，改善内核运行性能
 - [x] lz4 1.10.0 & zstd 1.5.7 算法更新&优化补丁(来自[@ferstar](https://github.com/ferstar), 移植by [@Xiaomichael](https://github.com/Xiaomichael), 6.12版本补丁重制by [@cctv18](https://github.com/cctv18))
@@ -45,6 +45,7 @@
 - WildKernel的一加系列内核构建脚本：[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)
 - ReSukiSU：[ReSukiSU/ReSukiSU](https://github.com/ReSukiSU/ReSukiSU)
 - SukiSU Ultra：[SukiSU-Ultra/SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra)
+- FinaSU：[LyraVoid/FinaSU](https://github.com/LyraVoid/FinaSU)
 - susfs4ksu：[ShirkNeko/susfs4ksu](https://github.com/ShirkNeko/susfs4ksu)
 - ReSukiSU：[ReSukiSU/ReSukiSU](https://github.com/ReSukiSU/ReSukiSU)
 - pershoot维护的KernelSU Next仓库：[pershoot/KernelSU-Next](https://github.com/pershoot/KernelSU-Next)
