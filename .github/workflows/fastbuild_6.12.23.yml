@@ -485,6 +485,10 @@ jobs:
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # FinaSU 内置构建需要开启 KALLSYMS_ALL，用于运行期解析 sys_call_table 等数据符号
+          if [[ "${{ github.event.inputs.ksu_type }}" == "finasu" ]]; then
+            echo "CONFIG_KALLSYMS_ALL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
           if [[ "${{ github.event.inputs.susfs_enable }}" == "false" ]]; then
             echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
           fi
