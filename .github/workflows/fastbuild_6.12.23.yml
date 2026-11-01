@@ -410,12 +410,36 @@ jobs:
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} != "none" ]]; then
             echo "正在添加susfs补丁..."
-            git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
+            SUSFS_BRANCH="oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+            git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b "$SUSFS_BRANCH"
+            # config/config 自定义提交：custom=true 且对应分支填有 40 位 hash 时锁定该提交
+            wget -q "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/config/config" -O custom_commit.conf || rm -f custom_commit.conf
+            wget -q "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/scripts/custom_commit.sh" -O custom_commit.sh || rm -f custom_commit.sh
+            SUSFS_PINNED=""
+            if [ -f custom_commit.sh ] && [ -f custom_commit.conf ] && \
+               CUSTOM_COMMIT_CONFIG="$PWD/custom_commit.conf" bash custom_commit.sh enabled 2>/dev/null; then
+              SUSFS_PINNED=$(CUSTOM_COMMIT_CONFIG="$PWD/custom_commit.conf" bash custom_commit.sh get "$SUSFS_BRANCH")
+            fi
+            if [ -n "$SUSFS_PINNED" ]; then
+              echo "config/config：锁定 SUSFS 提交 $SUSFS_PINNED（$SUSFS_BRANCH）"
+              git -C susfs4ksu fetch --depth=1 origin "$SUSFS_PINNED" || {
+                echo "::error::无法获取 config/config 中锁定的 SUSFS 提交 $SUSFS_PINNED"; exit 1; }
+              git -C susfs4ksu checkout --detach FETCH_HEAD || {
+                echo "::error::无法检出 config/config 中锁定的 SUSFS 提交 $SUSFS_PINNED"; exit 1; }
+            else
+              echo "SUSFS 使用分支 $SUSFS_BRANCH 的最新提交"
+            fi
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
             cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
             cd ./common
             patch -p1 -F 3 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
+            if [[ "${{ github.event.inputs.ksu_type }}" == "finasu" ]] && ! grep -q "ksu_setup_preinit_file" fs/exec.c; then
+              # 默认分支补丁缺少 SUSFS Inline 所需的 preinit 调用点，补充后再由 FinaSU 的 hook-site 检查把关
+              echo "正在补充 FinaSU SUSFS Inline 所需的 preinit 调用点..."
+              wget -q "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/finasu_susfs_inline_preinit.patch" -O finasu_susfs_inline_preinit.patch
+              patch -p1 -F 3 < finasu_susfs_inline_preinit.patch
+            fi
             cd ..
           else
             echo "已选择无内置KernelSU模式，跳过susfs配置..."
@@ -485,9 +509,12 @@ jobs:
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
-          # FinaSU 内置构建需要开启 KALLSYMS_ALL，用于运行期解析 sys_call_table 等数据符号
+          # FinaSU：内置构建必须开启 KALLSYMS_ALL；启用 SUSFS 时使用 Inline hook 后端
           if [[ "${{ github.event.inputs.ksu_type }}" == "finasu" ]]; then
             echo "CONFIG_KALLSYMS_ALL=y" >> ./common/arch/arm64/configs/gki_defconfig
+            if [[ "${{ github.event.inputs.susfs_enable }}" == "true" ]]; then
+              echo "CONFIG_KSU_HOOK_SUSFS_INLINE=y" >> ./common/arch/arm64/configs/gki_defconfig
+            fi
           fi
           if [[ "${{ github.event.inputs.susfs_enable }}" == "false" ]]; then
             echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
@@ -780,6 +807,10 @@ jobs:
             KCFLAGS+=" -I$KSU_INC_DIR -I$KSU_INC_DIR/include"
             KCFLAGS+=" -I$ROOT_REAL_PATH/security/selinux -I$ROOT_REAL_PATH/security/selinux/include"
             KCFLAGS+=" -I$COMMON_REAL_PATH/out/security/selinux -I$COMMON_REAL_PATH/out/security/selinux/include"
+            # 未安装 UAPI 头（CONFIG_HEADERS_INSTALL=n）时 preinit 关闭，需同步告知内核侧 SUSFS 补丁
+            if [ ! -f "$COMMON_REAL_PATH/out/usr/include/linux/unistd.h" ]; then
+              KCFLAGS+=" -DKSU_NO_PREINIT"
+            fi
           fi
           KCFLAGS+=" -no-canonical-prefixes"
           KCFLAGS+=" -O2"
