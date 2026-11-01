@@ -398,6 +398,10 @@ jobs:
             # CI 检出的是 detached 提交，Kbuild 的 rev-parse --abbrev-ref 会显示 @HEAD，固定为品牌名
             sed -i 's/@[$](KSU_VERSION_BRANCH)/@cctv18/' KernelSU/kernel/Kbuild
             grep -q '@cctv18' KernelSU/kernel/Kbuild || echo "::warning::FinaSU 品牌名替换未命中（上游 Kbuild 结构可能已变化）"
+            # O=out 构建时 FinaSU 的 Inline 检查脚本使用相对路径无法解析，改为绝对路径
+            INLINE_TOOL=finasu_inline_path.py
+            wget -q "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/scripts/$INLINE_TOOL" -O "$INLINE_TOOL" || { echo "::error::无法下载 FinaSU Inline 路径修复脚本"; exit 1; }
+            python3 "$INLINE_TOOL" "$(pwd)/KernelSU/kernel" "$(pwd)/common"
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
           else
